@@ -1,0 +1,312 @@
+{% extends "base.html" %}
+
+{% block title %}Two-Factor Authentication - Settle Space{% endblock %}
+
+{% block content %}
+<div class="container py-5">
+    <div class="row justify-content-center">
+        <div class="col-md-6 col-lg-4">
+            <div class="card shadow">
+                <div class="card-body p-5">
+                    <!-- Header -->
+                    <div class="text-center mb-4">
+                        <div class="mb-3">
+                            <i class="fas fa-shield-alt fa-3x text-success"></i>
+                        </div>
+                        <h2 class="fw-bold">Verify Your Identity</h2>
+                        <p class="text-muted">
+                            We've sent a verification code to your 
+                            {% set method = current_method or user.two_factor_method %}
+                            {% if method == 'email' %}
+                                email: <strong>{{ user.email[:3] }}***@{{ user.email.split('@')[1] }}</strong>
+                            {% else %}
+                                phone: <strong>{{ user.phone[:3] + '*' * (user.phone|length - 6) + user.phone[-3:] }}</strong>
+                            {% endif %}
+                        </p>
+                    </div>
+
+                    <!-- Verification Form -->
+                    <form method="POST" action="{{ url_for('auth.verify_2fa') }}" id="verifyForm" class="needs-validation" novalidate>
+                        {{ form.hidden_tag() }}
+                        
+                        <!-- OTP Code -->
+                        <div class="mb-4">
+                            {{ form.otp_code.label(class="form-label") }}
+                            <div class="input-group">
+                                <span class="input-group-text">
+                                    <i class="fas fa-key"></i>
+                                </span>
+                                {{ form.otp_code(class="form-control text-center fs-4", placeholder="000000", 
+                                   maxlength="6", style="letter-spacing: 0.5em;", id="otpCode", autocomplete="one-time-code") }}
+                                <div class="invalid-feedback" id="otp-error"></div>
+                                <div class="valid-feedback">
+                                    <i class="fas fa-check"></i> Valid code format!
+                                </div>
+                            </div>
+                            {% if form.otp_code.errors %}
+                                <div class="text-danger small mt-1">
+                                    {% for error in form.otp_code.errors %}
+                                        <div>{{ error }}</div>
+                                    {% endfor %}
+                                </div>
+                            {% endif %}
+                        </div>
+
+                        <!-- Timer and Resend -->
+                        <div class="text-center mb-4">
+                            <div class="alert alert-info py-2" id="timerAlert">
+                                <i class="fas fa-clock me-1"></i>
+                                Code expires in <span id="countdown" class="fw-bold">10:00</span>
+                            </div>
+                            <div id="resendSection" style="display: none;">
+                                <p class="text-muted mb-2">Didn't receive the code?</p>
+                                <a href="{{ url_for('auth.resend_otp') }}" class="btn btn-outline-primary btn-sm" id="resendBtn">
+                                    <i class="fas fa-redo me-1"></i> Resend Code
+                                </a>
+                            </div>
+                        </div>
+
+                        <!-- Submit Button -->
+                        <div class="d-grid mb-3">
+                            <button type="submit" class="btn btn-success btn-lg" id="verifyBtn">
+                                <i class="fas fa-shield-alt me-1"></i> Verify
+                            </button>
+                            <div class="text-center mt-2">
+                                <div class="spinner-border spinner-border-sm text-success d-none" id="loadingSpinner"></div>
+                                <small class="text-muted d-none" id="loadingText">Verifying...</small>
+                            </div>
+                        </div>
+                    </form>
+
+                    <!-- Alternative Method -->
+                    <div class="text-center">
+                        <small class="text-muted">
+                            Having trouble? 
+                            {% set current_method = current_method or user.two_factor_method %}
+                            {% if current_method == 'email' %}
+                                <a href="#" class="text-decoration-none" onclick="switchMethod('sms')">Try SMS instead</a>
+                            {% else %}
+                                <a href="#" class="text-decoration-none" onclick="switchMethod('email')">Try Email instead</a>
+                            {% endif %}
+                        </small>
+                        <br>
+                        <a href="{{ url_for('auth.login') }}" class="btn btn-outline-secondary btn-sm mt-2">
+                            <i class="fas fa-arrow-left me-1"></i> Back to Login
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const form = document.getElementById('verifyForm');
+    const otpField = document.getElementById('otpCode');
+    const verifyBtn = document.getElementById('verifyBtn');
+    const countdownElement = document.getElementById('countdown');
+    const timerAlert = document.getElementById('timerAlert');
+    const resendSection = document.getElementById('resendSection');
+    const resendBtn = document.getElementById('resendBtn');
+    
+    let timeLeft = 600; // 10 minutes in seconds
+    let isSubmitting = false; // Prevent double submission
+    
+    // Focus on OTP field
+    otpField.focus();
+    
+    // Auto-submit when 6 digits are entered
+    otpField.addEventListener('input', function() {
+        // Only allow digits
+        this.value = this.value.replace(/\D/g, '');
+        
+        // Validate format
+        if (this.value.length === 6) {
+            setFieldValid(this);
+            // Auto-submit after short delay
+            setTimeout(() => {
+                if (this.value.length === 6 && !isSubmitting) {
+                    submitForm();
+                }
+            }, 500);
+        } else if (this.value.length > 0) {
+            setFieldInvalid(this, 'Please enter all 6 digits');
+        } else {
+            this.classList.remove('is-valid', 'is-invalid');
+        }
+    });
+    
+    // Countdown timer
+    const timer = setInterval(function() {
+        timeLeft--;
+        
+        const minutes = Math.floor(timeLeft / 60);
+        const seconds = timeLeft % 60;
+        
+        countdownElement.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+        
+        if (timeLeft <= 0) {
+            clearInterval(timer);
+            timerAlert.className = 'alert alert-warning py-2';
+            timerAlert.innerHTML = '<i class="fas fa-exclamation-triangle me-1"></i> Code has expired';
+            resendSection.style.display = 'block';
+            otpField.disabled = true;
+            verifyBtn.disabled = true;
+        } else if (timeLeft <= 120) { // Last 2 minutes
+            timerAlert.className = 'alert alert-warning py-2';
+        }
+    }, 1000);
+    
+    // Form submission handler
+    form.addEventListener('submit', function(e) {
+        e.preventDefault();
+        
+        if (isSubmitting) return; // Prevent double submission
+        
+        const otp = otpField.value.trim();
+        
+        if (otp.length !== 6) {
+            setFieldInvalid(otpField, 'Please enter all 6 digits');
+            otpField.focus();
+            return;
+        }
+        
+        if (!/^\d{6}$/.test(otp)) {
+            setFieldInvalid(otpField, 'Code must contain only numbers');
+            otpField.focus();
+            return;
+        }
+        
+        submitForm();
+    });
+    
+    // Submit form function - FIXED VERSION
+    function submitForm() {
+        if (isSubmitting) return;
+        
+        isSubmitting = true;
+        
+        // Show loading state
+        verifyBtn.disabled = true;
+        document.getElementById('loadingSpinner').classList.remove('d-none');
+        document.getElementById('loadingText').classList.remove('d-none');
+        
+        // Use HTMLFormElement.prototype.submit to avoid naming conflicts
+        HTMLFormElement.prototype.submit.call(form);
+    }
+    
+    // Resend button handling
+    if (resendBtn) {
+        resendBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            
+            this.disabled = true;
+            this.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Sending...';
+            
+            // Navigate to resend URL
+            window.location.href = this.href;
+        });
+    }
+    
+    // Paste handling for OTP
+    otpField.addEventListener('paste', function(e) {
+        e.preventDefault();
+        const paste = (e.clipboardData || window.clipboardData).getData('text');
+        const digits = paste.replace(/\D/g, '').slice(0, 6);
+        this.value = digits;
+        
+        if (digits.length === 6) {
+            setFieldValid(this);
+            setTimeout(() => {
+                if (!isSubmitting) submitForm();
+            }, 500);
+        }
+    });
+    
+    function setFieldValid(field) {
+        field.classList.remove('is-invalid');
+        field.classList.add('is-valid');
+    }
+    
+    function setFieldInvalid(field, message) {
+        field.classList.remove('is-valid');
+        field.classList.add('is-invalid');
+        const errorDiv = document.getElementById('otp-error');
+        if (errorDiv) {
+            errorDiv.textContent = message;
+        }
+    }
+    
+    // Keyboard navigation for better UX
+    otpField.addEventListener('keydown', function(e) {
+        // Allow: backspace, delete, tab, escape, enter
+        if ([8, 9, 27, 13, 46].indexOf(e.keyCode) !== -1 ||
+            // Allow: Ctrl+A, Ctrl+C, Ctrl+V, Ctrl+X
+            (e.keyCode === 65 && e.ctrlKey === true) ||
+            (e.keyCode === 67 && e.ctrlKey === true) ||
+            (e.keyCode === 86 && e.ctrlKey === true) ||
+            (e.keyCode === 88 && e.ctrlKey === true)) {
+            return;
+        }
+        // Ensure that it is a number and stop the keypress
+        if ((e.shiftKey || (e.keyCode < 48 || e.keyCode > 57)) && (e.keyCode < 96 || e.keyCode > 105)) {
+            e.preventDefault();
+        }
+    });
+});
+
+// Function to switch 2FA method
+function switchMethod(method) {
+    if (confirm(`Switch to ${method.toUpperCase()} verification? A new code will be sent.`)) {
+        // Create a form to POST to the correct endpoint
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = '/auth/switch-2fa-method';
+        
+        // Add CSRF token
+        const csrfToken = document.querySelector('input[name="csrf_token"]').value;
+        const csrfInput = document.createElement('input');
+        csrfInput.type = 'hidden';
+        csrfInput.name = 'csrf_token';
+        csrfInput.value = csrfToken;
+        form.appendChild(csrfInput);
+        
+        // Add method input
+        const methodInput = document.createElement('input');
+        methodInput.type = 'hidden';
+        methodInput.name = 'method';
+        methodInput.value = method;
+        form.appendChild(methodInput);
+        
+        // Submit form using HTMLFormElement.prototype.submit
+        document.body.appendChild(form);
+        HTMLFormElement.prototype.submit.call(form);
+    }
+}
+</script>
+
+<style>
+#otpCode {
+    font-family: 'Courier New', monospace;
+    font-weight: bold;
+}
+
+.alert {
+    border: none;
+    border-radius: 10px;
+}
+
+.countdown-expired {
+    color: #dc3545 !important;
+    font-weight: bold;
+}
+
+@media (max-width: 576px) {
+    #otpCode {
+        font-size: 1.2rem !important;
+        letter-spacing: 0.3em !important;
+    }
+}
+</style>
+{% endblock %}
